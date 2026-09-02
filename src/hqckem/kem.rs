@@ -17,13 +17,11 @@
 //! - Galois field arithmetic (GF(256))
 //! - Vector operations over GF(2)[X]/(X^n - 1)
 
+use super::pke::*;
+use crate::coders::common::*;
 use crate::common::consts::*;
 use crate::common::*;
-use crate::coders::{
-    common::*,
-};
 use crate::field::*;
-use super::pke::*;
 
 // ============================================================================
 // HQC Parameter Set Structure
@@ -163,8 +161,23 @@ impl HqcParams {
     }
 
     /// Returns public key size in bytes: n_size_bytes + 32 (for seed_ek)
-    fn ek_size(&self) -> usize {
+    pub fn public_key_size(&self) -> usize {
         self.n_size_bytes() + 32 /* seed */
+    }
+
+    /// Returns secret key size in bytes
+    pub fn secret_key_size(&self) -> usize {
+        self.public_key_size() + 32 /* dk_pke */ + self.security_bytes() + 32 /* seed */
+    }
+
+    /// Returns shared secret size in bytes
+    pub fn shared_secret_size(&self) -> usize {
+        SHARED_SECRET_SIZE
+    }
+
+    /// Returns ciphertext size in bytes
+    pub fn ciphertext_size(&self) -> usize {
+        self.n_size_bytes() + self.n1n2_size_bytes() + SALT_SIZE
     }
 }
 
@@ -191,7 +204,7 @@ impl HqcParams {
 /// # Arguments
 /// * `p` - HQC parameter set (HQC-128, HQC-192, or HQC-256)
 /// * `seed` - Random seed for key generation
-/// * `pk_out` - Output buffer for public key (at least ek_size() bytes)
+/// * `pk_out` - Output buffer for public key (at least public_key_size() bytes)
 /// * `sk_out` - Output buffer for secret key (at least dk_size() bytes)
 ///
 /// # Returns
@@ -209,12 +222,7 @@ impl HqcParams {
 /// assert_eq!(pk_len, 2241);
 /// assert_eq!(sk_len, 2321);
 /// ```
-pub fn keygen(
-    p: &HqcParams,
-    seed: &[u8],
-    pk_out: &mut [u8],
-    sk_out: &mut [u8],
-) -> (usize, usize) {
+pub fn keygen(p: &HqcParams, seed: &[u8], pk_out: &mut [u8], sk_out: &mut [u8]) -> (usize, usize) {
     let mut ctx = xof_reader(&seed);
     let mut seed_pke: [u8; 32] = [0u8; 32];
     let mut sigma: [u8; 32] = [0u8; 32];
@@ -236,13 +244,16 @@ pub fn keygen(
     );
 
     // Copy out secret key: [ek_pke | dk_pke | sigma | seed]
-    let mut t =&mut sk_out[..];
-    t = append_bytes(t, &pk_out[..p.ek_size()]);
+    let mut t = &mut sk_out[..];
+    t = append_bytes(t, &pk_out[..p.public_key_size()]);
     t = append_bytes(t, &dk);
     t = append_bytes(t, &sigma[..p.security_bytes()]);
     _ = append_bytes(t, &seed);
 
-    (p.ek_size(), p.ek_size() + 32 /*dk_pke*/ + p.security_bytes() + seed.len())
+    (
+        p.public_key_size(),
+        p.public_key_size() + 32 /*dk_pke*/ + p.security_bytes() + seed.len(),
+    )
 }
 
 /// KEM encapsulation: generate a shared secret and ciphertext.
@@ -292,7 +303,11 @@ pub fn keygen(
 /// assert_eq!(ct_len, 4433);
 /// ```
 pub fn encaps(
-    p: &HqcParams, seed: &[u8], public_key: &[u8], shared_secret: &mut [u8], ciphertext: &mut [u8]
+    p: &HqcParams,
+    seed: &[u8],
+    public_key: &[u8],
+    shared_secret: &mut [u8],
+    ciphertext: &mut [u8],
 ) -> (usize, usize) {
     let (m, r) = seed.split_at(p.security_bytes());
     let (salt, _) = r.split_at(SALT_SIZE);
@@ -300,11 +315,12 @@ pub fn encaps(
     let hash_ek = hash_h(public_key);
     let k_theta = hash_g(&hash_ek, &m, &salt);
 
-    let mut u : [u64; MAX_N64] = [0u64; MAX_N64];
-    let mut v : [u64; MAX_N1N2_64] = [0u64; MAX_N1N2_64];
+    let mut u: [u64; MAX_N64] = [0u64; MAX_N64];
+    let mut v: [u64; MAX_N1N2_64] = [0u64; MAX_N1N2_64];
 
     pke_encrypt(
-        &mut u, &mut v,
+        &mut u,
+        &mut v,
         public_key,
         &m,
         &k_theta[SHARED_SECRET_SIZE..],
@@ -331,7 +347,10 @@ pub fn encaps(
     vec_to_bytes_into(&v, &mut v_bytes);
 
     shared_secret.copy_from_slice(&k_theta[..SHARED_SECRET_SIZE]);
-    (shared_secret.len(), p.n_size_bytes() + p.n1n2_size_bytes() + SALT_SIZE)
+    (
+        shared_secret.len(),
+        p.n_size_bytes() + p.n1n2_size_bytes() + SALT_SIZE,
+    )
 }
 
 /// KEM decapsulation: recover shared secret from ciphertext.
@@ -366,13 +385,14 @@ pub fn encaps(
 /// hqc::decaps(&params, &dk, &ct, &mut ss);
 /// ```
 pub fn decaps(p: &HqcParams, dk_kem: &[u8], ct: &[u8], shared_secret: &mut [u8]) {
-    let ek_pke = &dk_kem[..p.ek_size()];
-    let dk_pke = &dk_kem[p.ek_size()..p.ek_size() + 32];
-    let sigma = &dk_kem[p.ek_size() + 32..p.ek_size() + 32 + 16];
+    let ek_pke = &dk_kem[..p.public_key_size()];
+    let dk_pke = &dk_kem[p.public_key_size()..p.public_key_size() + 32];
+    let sigma = &dk_kem[p.public_key_size() + 32..p.public_key_size() + 32 + 16];
 
     let u_bytes = &ct[..p.n_size_bytes()];
     let v_bytes = &ct[p.n_size_bytes()..p.n_size_bytes() + p.n1n2_size_bytes()];
-    let salt = &ct[p.n_size_bytes() + p.n1n2_size_bytes()..p.n_size_bytes() + p.n1n2_size_bytes() + SALT_SIZE];
+    let salt = &ct[p.n_size_bytes() + p.n1n2_size_bytes()
+        ..p.n_size_bytes() + p.n1n2_size_bytes() + SALT_SIZE];
 
     let mut u: [u64; MAX_N64] = [0u64; MAX_N64];
     let mut v: [u64; MAX_N1N2_64] = [0u64; MAX_N1N2_64];
@@ -403,11 +423,12 @@ pub fn decaps(p: &HqcParams, dk_kem: &[u8], ct: &[u8], shared_secret: &mut [u8])
     let k_theta_prime = hash_g(&hash_ek, m_prime, salt);
     let k_prime = &k_theta_prime[..32];
     let theta_prime = &k_theta_prime[32..];
-    let mut u : [u64; MAX_N64] = [0u64; MAX_N64];
-    let mut v : [u64; MAX_N1N2_64] = [0u64; MAX_N1N2_64];
+    let mut u: [u64; MAX_N64] = [0u64; MAX_N64];
+    let mut v: [u64; MAX_N1N2_64] = [0u64; MAX_N1N2_64];
 
     pke_encrypt(
-        &mut u, &mut v,
+        &mut u,
+        &mut v,
         ek_pke,
         m_prime,
         theta_prime,
@@ -447,7 +468,7 @@ mod tests {
     fn test_hqc128_kem() {
         let p: HqcParams = HqcParams::new("HQC-128").expect("Invalid parameter set name");
         let seed_keygen: [u8; 32] = [0u8; 32];
-        let seed_encaps: [u8; 16+16] = [0u8; 16+16];
+        let seed_encaps: [u8; 16 + 16] = [0u8; 16 + 16];
         let mut ek: [u8; 2241] = [0u8; 2241];
         let mut dk: [u8; 2321] = [0u8; 2321];
         let mut ct: [u8; 4433] = [0u8; 4433];
@@ -466,7 +487,7 @@ mod tests {
     fn test_hqc192_kem() {
         let p: HqcParams = HqcParams::new("HQC-192").expect("Invalid parameter set name");
         let seed_keygen: [u8; 32] = [0u8; 32];
-        let seed_encaps: [u8; 24+16] = [0u8; 24+16];
+        let seed_encaps: [u8; 24 + 16] = [0u8; 24 + 16];
         let mut ek: [u8; 4514] = [0u8; 4514];
         let mut dk: [u8; 4602] = [0u8; 4602];
         let mut ct: [u8; 8978] = [0u8; 8978];
@@ -485,7 +506,7 @@ mod tests {
     fn test_hqc256_kem() {
         let p: HqcParams = HqcParams::new("HQC-256").expect("Invalid parameter set name");
         let seed_keygen: [u8; 32] = [0u8; 32];
-        let seed_encaps: [u8; 32+16] = [0u8; 32+16];
+        let seed_encaps: [u8; 32 + 16] = [0u8; 32 + 16];
         let mut ek: [u8; 7237] = [0u8; 7237];
         let mut dk: [u8; 7333] = [0u8; 7333];
         let mut ct: [u8; 14_421] = [0u8; 14_421];
