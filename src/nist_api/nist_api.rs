@@ -6,12 +6,7 @@
 //! Note: These functions are intentionally kept private to the crate to maintain a clean public API.
 //! Users should use the public functions (keygen, encaps, decaps) from the root module directly.
 
-use crate::{
-    HqcParams,
-    decaps,
-    encaps,
-    keygen,
-};
+use crate::{decaps, encaps, keygen, HqcParams};
 
 /// Seed size for NIST encapsulation (combines entropy and salt)
 const SALT_SIZE: usize = 16;

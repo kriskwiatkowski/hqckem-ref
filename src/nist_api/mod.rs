@@ -8,8 +8,3 @@
 
 /// Private NIST API wrapper functions that add RNG seeding to public KEM operations
 pub(crate) mod nist_api;
-
-/// Known Answer Test validation against official NIST PQC test vectors
-/// Only compiled when both test and std features are enabled
-#[cfg(all(test, feature = "std"))]
-mod tests;

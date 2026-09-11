@@ -9,8 +9,13 @@ repository = "https://github.com/kriskwiatkowski/hqckem-ref"
 keywords = ["cryptography", "post-quantum", "kem", "code-based", "hqc"]
 categories = ["cryptography", "no-std"]
 
+[workspace]
+members = ["xtask"]
+resolver = "2"
+
 [dependencies]
 sha3 = { version = "0.10", default-features = false }
+katwalk = { version = "0.0.15", optional = true }
 
 [dev-dependencies]
 rand_core = { version = "0.6", default-features = false }
@@ -23,7 +28,17 @@ criterion-cycles-per-byte = "0.8.0"
 [features]
 default = ["std"]
 std = []
+katwalk-bin = ["dep:katwalk"]
+
+[lib]
+name = "hqc"
+path = "src/lib.rs"
 
 [[bench]]
 name = "bench"
 harness = false
+
+[[bin]]
+name = "hqckem_wrapper"
+path = "test/kat/hqckem_wrapper.rs"
+required-features = ["katwalk-bin"]
